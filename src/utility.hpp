@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -258,7 +259,9 @@ inline std::wstring read_file_text(const std::filesystem::path& path, std::wstri
 
 inline bool write_file_utf8(const std::filesystem::path& path, const std::wstring& text, std::wstring* error = nullptr) {
     std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+    }
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -299,6 +302,180 @@ inline std::wstring unescape_xml(std::wstring value) {
 
 inline bool has_console_window() {
     return GetConsoleWindow() != nullptr;
+}
+
+inline bool is_valid_handle(HANDLE handle) {
+    return handle != nullptr && handle != INVALID_HANDLE_VALUE;
+}
+
+inline bool is_console_handle(HANDLE handle) {
+    if (!is_valid_handle(handle)) {
+        return false;
+    }
+    DWORD mode = 0;
+    return GetConsoleMode(handle, &mode) != 0;
+}
+
+inline void configure_console_code_page_utf8() {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+}
+
+inline HANDLE open_console_input_handle() {
+    static HANDLE handle = INVALID_HANDLE_VALUE;
+    if (is_valid_handle(handle)) {
+        return handle;
+    }
+
+    handle = CreateFileW(
+        L"CONIN$",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr);
+    return handle;
+}
+
+inline HANDLE open_console_output_handle() {
+    static HANDLE handle = INVALID_HANDLE_VALUE;
+    if (is_valid_handle(handle)) {
+        return handle;
+    }
+
+    handle = CreateFileW(
+        L"CONOUT$",
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr);
+    return handle;
+}
+
+inline HANDLE effective_stdout_handle() {
+    const HANDLE console = open_console_output_handle();
+    if (is_valid_handle(console)) {
+        return console;
+    }
+    return GetStdHandle(STD_OUTPUT_HANDLE);
+}
+
+inline HANDLE effective_stderr_handle() {
+    const HANDLE console = open_console_output_handle();
+    if (is_valid_handle(console)) {
+        return console;
+    }
+    return GetStdHandle(STD_ERROR_HANDLE);
+}
+
+inline HANDLE effective_stdin_handle() {
+    const HANDLE console = open_console_input_handle();
+    if (is_valid_handle(console)) {
+        return console;
+    }
+    return GetStdHandle(STD_INPUT_HANDLE);
+}
+
+inline bool write_to_handle(HANDLE handle, std::wstring_view text) {
+    if (!is_valid_handle(handle)) {
+        return false;
+    }
+
+    if (is_console_handle(handle)) {
+        DWORD written = 0;
+        return WriteConsoleW(handle, text.data(), static_cast<DWORD>(text.size()), &written, nullptr) != 0;
+    }
+
+    const std::wstring tmp(text);
+    const std::string utf8 = wstring_to_utf8(tmp);
+    DWORD written = 0;
+    return WriteFile(handle, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr) != 0;
+}
+
+inline bool write_stdout(std::wstring_view text) {
+    return write_to_handle(effective_stdout_handle(), text);
+}
+
+inline bool write_stderr(std::wstring_view text) {
+    return write_to_handle(effective_stderr_handle(), text);
+}
+
+inline bool read_console_line(std::wstring* out_line) {
+    if (out_line == nullptr) {
+        return false;
+    }
+    out_line->clear();
+
+    const HANDLE in = effective_stdin_handle();
+    if (is_console_handle(in)) {
+        while (true) {
+            wchar_t chunk[128] = {};
+            DWORD read = 0;
+            if (!ReadConsoleW(in, chunk, static_cast<DWORD>(std::size(chunk) - 1), &read, nullptr)) {
+                return false;
+            }
+            if (read == 0) {
+                return false;
+            }
+
+            out_line->append(chunk, chunk + read);
+            const std::size_t line_end = out_line->find_first_of(L"\r\n");
+            if (line_end != std::wstring::npos) {
+                out_line->resize(line_end);
+                while (!out_line->empty() && out_line->back() == L'\r') {
+                    out_line->pop_back();
+                }
+                return true;
+            }
+        }
+    }
+
+    std::string line;
+    if (!std::getline(std::cin, line)) {
+        return false;
+    }
+
+    std::wstring text = bytes_to_wstring(line, CP_UTF8);
+    if (text.empty() && !line.empty()) {
+        text = bytes_to_wstring(line, CP_ACP);
+    }
+    *out_line = std::move(text);
+    return true;
+}
+
+inline bool try_attach_parent_console() {
+    if (has_console_window()) {
+        configure_console_code_page_utf8();
+        return true;
+    }
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+        return false;
+    }
+    configure_console_code_page_utf8();
+    return true;
+}
+
+inline bool ensure_interactive_console() {
+    if (has_console_window()) {
+        configure_console_code_page_utf8();
+        return true;
+    }
+
+    // GUI subsystem process should use its own interactive console.
+    // Attaching parent console causes cmd prompt interleaving while cmd does not wait for GUI apps.
+    if (AllocConsole()) {
+        configure_console_code_page_utf8();
+        return true;
+    }
+
+    // Fallback for environments where a console already exists but this process is detached.
+    if (try_attach_parent_console()) {
+        return true;
+    }
+    return false;
 }
 
 } // namespace le::util

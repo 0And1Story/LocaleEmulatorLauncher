@@ -3,12 +3,174 @@
 #include "types.hpp"
 #include "utility.hpp"
 
+#include <functional>
+#include <optional>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace le {
 
-inline std::wstring usage_text() {
-    return LR"(LocaleEmulator launcher
+struct OptionSpec {
+    std::wstring name;
+    std::vector<std::wstring> aliases;
+    bool takes_value = false;
+    std::wstring value_hint;
+    std::wstring description;
+    std::wstring default_text;
+    std::function<bool(CliOptions&, const std::optional<std::wstring>&, std::wstring&)> handler;
+};
+
+class OptionRegistry {
+public:
+    bool add(OptionSpec spec) {
+        if (spec.name.empty() || (spec.name.front() != L'-' && spec.name.front() != L'/')) {
+            return false;
+        }
+        const std::wstring primary = util::to_lower_ascii(spec.name);
+        if (index_.contains(primary)) {
+            return false;
+        }
+
+        for (std::wstring& alias : spec.aliases) {
+            alias = util::trim(alias);
+            if (alias.empty()) {
+                return false;
+            }
+            if (alias.front() != L'-' && alias.front() != L'/') {
+                return false;
+            }
+            const std::wstring key = util::to_lower_ascii(alias);
+            if (index_.contains(key)) {
+                return false;
+            }
+        }
+
+        const std::size_t idx = specs_.size();
+        specs_.push_back(std::move(spec));
+        index_[primary] = idx;
+        for (const std::wstring& alias : specs_[idx].aliases) {
+            index_[util::to_lower_ascii(alias)] = idx;
+        }
+        return true;
+    }
+
+    const OptionSpec* find(std::wstring_view name) const {
+        const std::wstring key = util::to_lower_ascii(name);
+        const auto it = index_.find(key);
+        if (it == index_.end()) {
+            return nullptr;
+        }
+        return &specs_[it->second];
+    }
+
+    const std::vector<OptionSpec>& specs() const {
+        return specs_;
+    }
+
+private:
+    std::vector<OptionSpec> specs_;
+    std::unordered_map<std::wstring, std::size_t> index_;
+};
+
+inline OptionRegistry make_default_option_registry() {
+    OptionRegistry registry;
+
+    registry.add(OptionSpec {
+        .name = L"--help",
+        .aliases = {L"-h", L"/?"},
+        .takes_value = false,
+        .description = L"Show this help",
+        .handler = [](CliOptions& options, const std::optional<std::wstring>&, std::wstring&) {
+            options.show_help = true;
+            return true;
+        },
+    });
+
+    registry.add(OptionSpec {
+        .name = L"--config",
+        .takes_value = false,
+        .description = L"Interactive wizard, write config.ini in launcher dir or leconfig.ini in other dirs",
+        .handler = [](CliOptions& options, const std::optional<std::wstring>&, std::wstring&) {
+            options.run_config_wizard = true;
+            return true;
+        },
+    });
+
+    registry.add(OptionSpec {
+        .name = L"--lepath",
+        .takes_value = true,
+        .value_hint = L"<path>",
+        .description = L"LocaleEmulator install directory or LEProc.exe path",
+        .handler = [](CliOptions& options, const std::optional<std::wstring>& value, std::wstring& error) {
+            if (!value.has_value()) {
+                error = L"--lepath requires a value.";
+                return false;
+            }
+            const std::wstring trimmed = util::trim(*value);
+            if (trimmed.empty()) {
+                error = L"--lepath cannot be empty.";
+                return false;
+            }
+            options.install_path = std::filesystem::path(trimmed);
+            return true;
+        },
+    });
+
+    registry.add(OptionSpec {
+        .name = L"--profile",
+        .takes_value = true,
+        .value_hint = L"<guid>",
+        .description = L"Profile GUID for runas mode",
+        .handler = [](CliOptions& options, const std::optional<std::wstring>& value, std::wstring& error) {
+            if (!value.has_value()) {
+                error = L"--profile requires a value.";
+                return false;
+            }
+            const std::wstring trimmed = util::trim(*value);
+            if (trimmed.empty()) {
+                error = L"--profile cannot be empty.";
+                return false;
+            }
+            options.profile_guid = trimmed;
+            return true;
+        },
+    });
+
+    registry.add(OptionSpec {
+        .name = L"--mode",
+        .takes_value = true,
+        .value_hint = L"<mode>",
+        .description = L"path | run | runas | manage | global",
+        .default_text = L"runas",
+        .handler = [](CliOptions& options, const std::optional<std::wstring>& value, std::wstring& error) {
+            if (!value.has_value()) {
+                error = L"--mode requires a value.";
+                return false;
+            }
+            const std::optional<Mode> mode = parse_mode(util::trim(*value));
+            if (!mode.has_value()) {
+                error = L"Invalid mode: " + *value;
+                return false;
+            }
+            options.mode = *mode;
+            return true;
+        },
+    });
+
+    return registry;
+}
+
+inline const OptionRegistry& default_option_registry() {
+    static const OptionRegistry registry = make_default_option_registry();
+    return registry;
+}
+
+inline std::wstring usage_text(const OptionRegistry& registry = default_option_registry()) {
+    std::wostringstream out;
+    out << LR"(Locale Emulator Launcher
 
 Usage:
   LocaleEmulator.exe [options] <target.exe|target.lnk> [target args...]
@@ -16,51 +178,45 @@ Usage:
   LocaleEmulator.exe --config
 
 Options:
-  --install-path <path>   LocaleEmulator install directory or LEProc.exe path
-  --lepath <path>         Alias of --install-path
-  --profile-guid <guid>   Profile GUID for runas mode
-  --profile <guid>        Alias of --profile-guid
-  --mode <mode>           path | run | runas | manage | global
-  --config                Interactive wizard, write config.ini in current directory
-  --help, -h, /?          Show this help
 )";
+
+    for (const OptionSpec& spec : registry.specs()) {
+        out << L"  " << spec.name;
+        for (const std::wstring& alias : spec.aliases) {
+            out << L", " << alias;
+        }
+        if (spec.takes_value) {
+            out << L" " << (spec.value_hint.empty() ? L"<value>" : spec.value_hint);
+        }
+        out << L"\n    " << spec.description;
+        if (!spec.default_text.empty()) {
+            out << L" (default: " << spec.default_text << L")";
+        }
+        out << L"\n";
+    }
+    return out.str();
 }
 
-inline bool option_match(const std::wstring& arg, std::wstring_view option_name) {
-    if (arg == option_name) {
+inline bool split_option_token(
+    const std::wstring& arg,
+    std::wstring* name,
+    std::optional<std::wstring>* inline_value) {
+    const std::size_t pos = arg.find(L'=');
+    if (pos == std::wstring::npos) {
+        *name = arg;
+        *inline_value = std::nullopt;
         return true;
     }
-    if (arg.size() > option_name.size() + 1 &&
-        arg.compare(0, option_name.size(), option_name) == 0 &&
-        arg[option_name.size()] == L'=') {
-        return true;
-    }
-    return false;
+
+    *name = arg.substr(0, pos);
+    *inline_value = arg.substr(pos + 1);
+    return true;
 }
 
-inline std::optional<std::wstring> extract_option_value(
-    int& index,
+inline ParseResult parse_args(
     int argc,
     wchar_t* argv[],
-    const std::wstring& current_arg,
-    std::wstring_view option_name,
-    std::wstring& error) {
-    if (current_arg.size() > option_name.size() + 1 &&
-        current_arg.compare(0, option_name.size(), option_name) == 0 &&
-        current_arg[option_name.size()] == L'=') {
-        return current_arg.substr(option_name.size() + 1);
-    }
-
-    if (index + 1 >= argc) {
-        error = L"Option requires a value: " + std::wstring(option_name);
-        return std::nullopt;
-    }
-
-    ++index;
-    return std::wstring(argv[index]);
-}
-
-inline ParseResult parse_args(int argc, wchar_t* argv[]) {
+    const OptionRegistry& registry = default_option_registry()) {
     ParseResult result;
     result.ok = true;
 
@@ -83,75 +239,41 @@ inline ParseResult parse_args(int argc, wchar_t* argv[]) {
             continue;
         }
 
-        if (!result.options.target_input.has_value() && (arg == L"--help" || arg == L"-h" || arg == L"/?")) {
-            result.options.show_help = true;
-            continue;
-        }
-
-        if (!result.options.target_input.has_value() && arg == L"--config") {
-            result.options.run_config_wizard = true;
-            continue;
-        }
-
         if (!result.options.target_input.has_value() &&
-            (option_match(arg, L"--install-path") || option_match(arg, L"--lepath"))) {
+            ((!arg.empty() && arg.front() == L'-') || arg == L"/?")) {
+            std::wstring option_name;
+            std::optional<std::wstring> inline_value;
+            split_option_token(arg, &option_name, &inline_value);
+
+            const OptionSpec* spec = registry.find(option_name);
+            if (spec == nullptr) {
+                result.ok = false;
+                result.error = L"Unknown option: " + option_name;
+                return result;
+            }
+
+            std::optional<std::wstring> value = inline_value;
+            if (spec->takes_value && !value.has_value()) {
+                if (i + 1 >= argc) {
+                    result.ok = false;
+                    result.error = L"Option requires value: " + spec->name;
+                    return result;
+                }
+                ++i;
+                value = std::wstring(argv[i]);
+            } else if (!spec->takes_value && value.has_value()) {
+                result.ok = false;
+                result.error = L"Option does not accept value: " + spec->name;
+                return result;
+            }
+
             std::wstring error;
-            std::optional<std::wstring> value;
-            if (option_match(arg, L"--install-path")) {
-                value = extract_option_value(i, argc, argv, arg, L"--install-path", error);
-            } else {
-                value = extract_option_value(i, argc, argv, arg, L"--lepath", error);
-            }
-            if (!value.has_value()) {
+            if (!spec->handler(result.options, value, error)) {
                 result.ok = false;
-                result.error = error;
+                result.error = error.empty() ? (L"Failed to handle option: " + spec->name) : error;
                 return result;
             }
-            result.options.install_path = std::filesystem::path(*value);
             continue;
-        }
-
-        if (!result.options.target_input.has_value() &&
-            (option_match(arg, L"--profile-guid") || option_match(arg, L"--profile"))) {
-            std::wstring error;
-            std::optional<std::wstring> value;
-            if (option_match(arg, L"--profile-guid")) {
-                value = extract_option_value(i, argc, argv, arg, L"--profile-guid", error);
-            } else {
-                value = extract_option_value(i, argc, argv, arg, L"--profile", error);
-            }
-            if (!value.has_value()) {
-                result.ok = false;
-                result.error = error;
-                return result;
-            }
-            result.options.profile_guid = util::trim(*value);
-            continue;
-        }
-
-        if (!result.options.target_input.has_value() && option_match(arg, L"--mode")) {
-            std::wstring error;
-            const std::optional<std::wstring> value = extract_option_value(i, argc, argv, arg, L"--mode", error);
-            if (!value.has_value()) {
-                result.ok = false;
-                result.error = error;
-                return result;
-            }
-
-            const std::optional<Mode> mode = parse_mode(util::trim(*value));
-            if (!mode.has_value()) {
-                result.ok = false;
-                result.error = L"Invalid mode: " + *value;
-                return result;
-            }
-            result.options.mode = mode;
-            continue;
-        }
-
-        if (!result.options.target_input.has_value() && !arg.empty() && arg.front() == L'-') {
-            result.ok = false;
-            result.error = L"Unknown option: " + arg;
-            return result;
         }
 
         if (!result.options.target_input.has_value()) {

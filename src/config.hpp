@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <cwchar>
 
 namespace le::config {
 
@@ -24,21 +25,21 @@ inline void append_warning(std::wstring* warnings, const std::wstring& line) {
 }
 
 inline void apply_ini_overrides(const ini::IniMap& map, RuntimeConfig& config, std::wstring* warnings = nullptr) {
-    if (const auto value = ini::get_value(map, L"installpath"); value.has_value()) {
+    if (const auto value = ini::get_value(map, L"InstallPath"); value.has_value()) {
         const std::wstring trimmed = util::trim(*value);
         if (!trimmed.empty()) {
             config.install_path = std::filesystem::path(trimmed);
         }
     }
 
-    if (const auto value = ini::get_value(map, L"profileguid"); value.has_value()) {
+    if (const auto value = ini::get_value(map, L"ProfileGuid"); value.has_value()) {
         const std::wstring trimmed = util::trim(*value);
         if (!trimmed.empty()) {
             config.profile_guid = trimmed;
         }
     }
 
-    if (const auto value = ini::get_value(map, L"mode"); value.has_value()) {
+    if (const auto value = ini::get_value(map, L"Mode"); value.has_value()) {
         const std::wstring trimmed = util::trim(*value);
         if (!trimmed.empty()) {
             const std::optional<Mode> mode = parse_mode(trimmed);
@@ -58,11 +59,14 @@ inline RuntimeConfig load_runtime_from_ini_file(
     config.mode = Mode::RunAs;
 
     std::wstring read_error;
-    const ini::IniMap data = ini::read_ini(ini_path, &read_error);
+    const ini::IniReadResult read_result = ini::read_ini(ini_path, ini::runtime_ini_registry(), &read_error);
     if (!read_error.empty()) {
         append_warning(warnings, read_error);
     }
-    apply_ini_overrides(data, config, warnings);
+    for (const std::wstring& warning : read_result.warnings) {
+        append_warning(warnings, warning);
+    }
+    apply_ini_overrides(read_result.values, config, warnings);
     return config;
 }
 
@@ -78,22 +82,28 @@ inline RuntimeConfig load_runtime_config(
     const std::filesystem::path launcher_ini = launcher_dir / L"config.ini";
     {
         std::wstring read_error;
-        const ini::IniMap map = ini::read_ini(launcher_ini, &read_error);
+        const ini::IniReadResult read_result = ini::read_ini(launcher_ini, ini::runtime_ini_registry(), &read_error);
         if (!read_error.empty()) {
             append_warning(warnings, read_error);
         }
-        apply_ini_overrides(map, config, warnings);
+        for (const std::wstring& warning : read_result.warnings) {
+            append_warning(warnings, warning);
+        }
+        apply_ini_overrides(read_result.values, config, warnings);
     }
 
     if (target_dir.has_value()) {
         const std::filesystem::path local_ini = *target_dir / L"leconfig.ini";
         if (std::filesystem::exists(local_ini)) {
             std::wstring read_error;
-            const ini::IniMap map = ini::read_ini(local_ini, &read_error);
+            const ini::IniReadResult read_result = ini::read_ini(local_ini, ini::runtime_ini_registry(), &read_error);
             if (!read_error.empty()) {
                 append_warning(warnings, read_error);
             }
-            apply_ini_overrides(map, config, warnings);
+            for (const std::wstring& warning : read_result.warnings) {
+                append_warning(warnings, warning);
+            }
+            apply_ini_overrides(read_result.values, config, warnings);
             if (target_ini_used != nullptr) {
                 *target_ini_used = local_ini;
             }
@@ -214,23 +224,23 @@ inline std::filesystem::path choose_profile_persist_ini(
     const std::filesystem::path& launcher_dir,
     const std::optional<std::filesystem::path>& target_dir) {
     if (target_dir.has_value()) {
-        const std::filesystem::path local_ini = *target_dir / L"leconfig.ini";
-        if (std::filesystem::exists(local_ini)) {
-            return local_ini;
-        }
+        return *target_dir / L"leconfig.ini";
     }
     return launcher_dir / L"config.ini";
 }
 
 inline bool persist_profile_guid(const std::filesystem::path& ini_path, const std::wstring& guid, std::wstring* error = nullptr) {
     std::wstring read_error;
-    ini::IniMap map = ini::read_ini(ini_path, &read_error);
+    ini::IniReadResult read_result = ini::read_ini(ini_path, ini::runtime_ini_registry(), &read_error);
     if (!read_error.empty()) {
         append_warning(error, read_error);
     }
+    for (const std::wstring& warning : read_result.warnings) {
+        append_warning(error, warning);
+    }
 
-    ini::set_value(map, L"ProfileGuid", guid);
-    return ini::write_ini(ini_path, map, error);
+    ini::set_value(read_result.values, L"ProfileGuid", guid);
+    return ini::write_ini(ini_path, read_result.values, ini::runtime_ini_registry(), error);
 }
 
 } // namespace le::config
