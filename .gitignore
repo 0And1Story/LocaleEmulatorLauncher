@@ -1,1 +1,35 @@
-tmp
+# Build outputs
+/build/
+/out/
+/bin/
+/obj/
+
+# CMake / Ninja
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/compile_commands.json
+/Makefile
+/.ninja_deps
+/.ninja_log
+/build.ninja
+
+# IDE / tool cache
+/.vs/
+/.vscode/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Debug symbols and logs
+*.pdb
+*.ilk
+*.exp
+*.log
+
+# Temporary workspace files
+/tmp/
+
+# Extract reports
+/resources/icon_dump/
