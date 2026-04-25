@@ -1,0 +1,44 @@
+---------------------------
+Locale Emulator
+---------------------------
+Welcome to Locale Emulator command line tool.
+
+
+
+Usage: LEProc.exe
+
+	path
+
+	-run path [args]
+
+	-runas guid path [args]
+
+	-manage path
+
+	-global
+
+
+
+path	Full path of the target application.
+
+guid	Guid of the target profile (in LEConfig.xml).
+
+args	Additional arguments will be passed to the application.
+
+
+
+path	Run an application with 
+
+		(i) its own profile (if any) or 
+
+		(ii) first global profile (if any) or 
+
+		(iii) default ja-JP profile.
+
+-run	Run an application with it's own profile.
+
+-runas	Run an application with a global profile of specific Guid.
+
+-manage	Modify the profile of one application.
+
+-global	Open Global Profile Manager.
