@@ -126,6 +126,25 @@ inline RuntimeConfig load_runtime_config(
     return config;
 }
 
+inline std::optional<std::filesystem::path> validate_install_dir(const std::filesystem::path& dir) {
+    if (dir.empty()) {
+        return std::nullopt;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path leproc = dir / L"LEProc.exe";
+    const std::filesystem::path leconfig = dir / L"LEConfig.xml";
+    if (!std::filesystem::is_regular_file(leproc, ec) || !std::filesystem::is_regular_file(leconfig, ec)) {
+        return std::nullopt;
+    }
+
+    const std::filesystem::path absolute = std::filesystem::absolute(leproc, ec);
+    if (!ec) {
+        return absolute;
+    }
+    return leproc;
+}
+
 inline std::optional<std::filesystem::path> resolve_leproc_from_install_path(const std::filesystem::path& install_path) {
     if (install_path.empty()) {
         return std::nullopt;
@@ -133,36 +152,53 @@ inline std::optional<std::filesystem::path> resolve_leproc_from_install_path(con
 
     std::error_code ec;
     if (std::filesystem::is_regular_file(install_path, ec)) {
-        if (util::iequals_ascii(install_path.filename().wstring(), L"LEProc.exe")) {
-            return std::filesystem::absolute(install_path, ec);
+        if (!util::iequals_ascii(install_path.filename().wstring(), L"LEProc.exe")) {
+            return std::nullopt;
         }
+        return validate_install_dir(install_path.parent_path());
     }
+    return validate_install_dir(install_path);
+}
 
-    const std::filesystem::path candidate = install_path / L"LEProc.exe";
-    if (std::filesystem::is_regular_file(candidate, ec)) {
-        return std::filesystem::absolute(candidate, ec);
-    }
-
-    return std::nullopt;
+inline std::optional<std::filesystem::path> find_leproc_in_launcher_dir() {
+    return validate_install_dir(util::executable_dir());
 }
 
 inline std::optional<std::filesystem::path> find_leproc_in_path() {
-    const DWORD required = SearchPathW(nullptr, L"LEProc.exe", nullptr, 0, nullptr, nullptr);
-    if (required == 0) {
+    const auto path_env = util::getenv_w(L"PATH");
+    if (!path_env.has_value()) {
         return std::nullopt;
     }
 
-    std::wstring buffer(required + 1, L'\0');
-    const DWORD written = SearchPathW(nullptr, L"LEProc.exe", nullptr, static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
-    if (written == 0 || written >= buffer.size()) {
-        return std::nullopt;
-    }
+    std::size_t start = 0;
+    while (start <= path_env->size()) {
+        std::size_t end = path_env->find(L';', start);
+        if (end == std::wstring::npos) {
+            end = path_env->size();
+        }
 
-    buffer.resize(written);
-    return std::filesystem::path(buffer);
+        std::wstring segment = util::trim(path_env->substr(start, end - start));
+        if (!segment.empty() && segment.front() == L'"' && segment.back() == L'"' && segment.size() >= 2) {
+            segment = segment.substr(1, segment.size() - 2);
+        }
+
+        if (!segment.empty()) {
+            if (const std::optional<std::filesystem::path> found = validate_install_dir(std::filesystem::path(segment));
+                found.has_value()) {
+                return found;
+            }
+        }
+
+        if (end == path_env->size()) {
+            break;
+        }
+        start = end + 1;
+    }
+    return std::nullopt;
 }
 
 inline std::optional<std::filesystem::path> find_leproc_in_common_dirs() {
+
     std::vector<std::filesystem::path> roots;
     for (const wchar_t* env_name : {L"ProgramFiles", L"ProgramFiles(x86)", L"ProgramW6432"}) {
         if (const auto value = util::getenv_w(env_name); value.has_value()) {
@@ -187,10 +223,9 @@ inline std::optional<std::filesystem::path> find_leproc_in_common_dirs() {
 
     for (const auto& root : roots) {
         for (const wchar_t* folder : {L"LocaleEmulator", L"Locale Emulator"}) {
-            const std::filesystem::path candidate = root / folder / L"LEProc.exe";
-            std::error_code ec;
-            if (std::filesystem::is_regular_file(candidate, ec)) {
-                return candidate;
+            if (const std::optional<std::filesystem::path> found = validate_install_dir(root / folder);
+                found.has_value()) {
+                return found;
             }
         }
     }
@@ -204,7 +239,12 @@ inline std::optional<std::filesystem::path> resolve_leproc_exe(RuntimeConfig& co
             config.install_path = candidate->parent_path();
             return candidate;
         }
-        append_warning(diagnostic, L"Configured InstallPath does not contain LEProc.exe, fallback to auto-discovery.");
+        append_warning(diagnostic, L"Configured InstallPath is missing LEProc.exe or LEConfig.xml, fallback to auto-discovery.");
+    }
+
+    if (const auto by_launcher_dir = find_leproc_in_launcher_dir(); by_launcher_dir.has_value()) {
+        config.install_path = by_launcher_dir->parent_path();
+        return by_launcher_dir;
     }
 
     if (const auto by_path = find_leproc_in_path(); by_path.has_value()) {
@@ -216,7 +256,7 @@ inline std::optional<std::filesystem::path> resolve_leproc_exe(RuntimeConfig& co
         return by_common;
     }
 
-    append_warning(diagnostic, L"Unable to discover LEProc.exe from PATH or common install directories.");
+    append_warning(diagnostic, L"Unable to discover LEProc.exe + LEConfig.xml from launcher dir, PATH, or common install directories.");
     return std::nullopt;
 }
 
