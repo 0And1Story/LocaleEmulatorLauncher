@@ -14,6 +14,15 @@ add_executable(LocaleEmulator WIN32
 target_include_directories(LocaleEmulator PRIVATE src)
 target_link_libraries(LocaleEmulator PRIVATE Ole32 Shell32)
 
+add_executable(CreateLEShortcut WIN32
+    src/create_shortcut.cpp
+    resources/icon.rc
+)
+
+target_include_directories(CreateLEShortcut PRIVATE src)
+target_link_libraries(CreateLEShortcut PRIVATE Ole32 Shell32)
+
 if (MSVC)
     target_compile_options(LocaleEmulator PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(CreateLEShortcut PRIVATE /W4 /permissive- /utf-8)
 endif()
